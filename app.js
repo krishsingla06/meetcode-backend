@@ -1,5 +1,3 @@
-// });
-
 const express = require("express");
 const mongoose = require("mongoose");
 
@@ -32,10 +30,6 @@ app.get("/", (req, res) => {
   res.status(200);
   res.send("Welcome to root URL of Server updated");
 });
-
-// app.use((req, res) => {
-//   res.send("<h1>Hello, World!</h1>"); // default response to any request
-// });
 
 app.get("/file", (req, res) => {
   res.sendFile(path.join(__dirname, "static", "2.png"));
