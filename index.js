@@ -242,5 +242,5 @@ app.post("/api/repos/join", authenticateToken, async (req, res) => {
 });
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Server running at http://10.81.78.12:${PORT}`);
+  console.log(`Server running at http://${BASE_URL}:${PORT}`);
 });
