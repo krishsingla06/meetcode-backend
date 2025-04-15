@@ -3,17 +3,18 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { MongoClient } from "mongodb";
 import cors from "cors";
+import dotenv from "dotenv";
+import axios from "axios"; // Importing axios for HTTP requests
+
+dotenv.config();
 
 const app = express();
 const JWT_SECRET = "12345";
 const PORT = 8000;
-import dotenv from "dotenv";
-dotenv.config();
-
 const BASE_URL = process.env.FRONTEND_URL;
 const uri = `mongodb+srv://arnavvv:C14hMPSHTpdcB5vq@arnavvv.isvph.mongodb.net/JEE`;
-
 const client = new MongoClient(uri);
+
 await client.connect();
 
 const corsOptions = {
@@ -21,6 +22,7 @@ const corsOptions = {
   methods: "GET, POST, PUT, DELETE",
   credentials: true,
 };
+
 
 app.use(express.json());
 app.use(cors(corsOptions));
@@ -46,119 +48,59 @@ app.get("/", (req, res) => {
   res.status(200).send("Welcome to the root URL of Meet Code Server");
 });
 
+// Existing routes for signup, login, etc. ...
 app.post("/signup", async (req, res) => {
-  console.log("called signup");
   const { username, password } = req.body;
   const db = client.db("Jee");
   const usersCollection = db.collection("users");
-
   try {
     const userExists = await usersCollection.findOne({ username });
     if (userExists)
       return res.status(400).json({ message: "User already exists" });
-
     const hashedPassword = await bcrypt.hash(password, 10);
     const newUser = { username, password: hashedPassword };
     await usersCollection.insertOne(newUser);
-
     res.status(200).json({ message: "User created successfully" });
   } catch (error) {
-    console.error("Error creating user:", error);
-    res.status(500).json({ message: "Internal Server Error", error });
-  }
-});
-
-app.post("/signupadmin", async (req, res) => {
-  const { username, password } = req.body;
-  const db = client.db("Jee");
-  const usersCollection = db.collection("admins");
-
-  try {
-    const userExists = await usersCollection.findOne({ username });
-    if (userExists)
-      return res.status(400).json({ message: "User already exists" });
-
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const newUser = { username, password: hashedPassword };
-    await usersCollection.insertOne(newUser);
-
-    res.status(200).json({ message: "User created successfully" });
-  } catch (error) {
-    console.error("Error creating user:", error);
     res.status(500).json({ message: "Internal Server Error", error });
   }
 });
 
 app.post("/login", async (req, res) => {
-  console.log("called login");
   const { username, password } = req.body;
   const db = client.db("Jee");
   const usersCollection = db.collection("users");
-
   try {
     const user = await usersCollection.findOne({ username });
-    if (!user) return res.status(400).json({ message: "User not found" });
-
+    if (!user)
+      return res.status(400).json({ message: "User not found" });
     const passwordMatch = await bcrypt.compare(password, user.password);
     if (!passwordMatch)
       return res.status(400).json({ message: "Incorrect password" });
-
     const token = jwt.sign({ username: user.username }, JWT_SECRET, {
       expiresIn: "1h",
     });
-
-    res
-      .status(200)
-      .json({ message: "Login successful", token, username: user.username });
-  } catch (error) {
-    console.error("Error during login:", error);
-    res.status(500).json({ message: "Internal Server Error", error });
-  }
-});
-
-app.post("/loginadmin", async (req, res) => {
-  console.log("called loginadmin");
-  const { username, password } = req.body;
-  const db = client.db("Jee");
-  const usersCollection = db.collection("admins");
-
-  try {
-    const user = await usersCollection.findOne({ username });
-    if (!user) return res.status(400).json({ message: "User not found" });
-
-    const passwordMatch = await bcrypt.compare(password, user.password);
-    if (!passwordMatch)
-      return res.status(400).json({ message: "Incorrect password" });
-
-    const token = jwt.sign({ username: user.username }, JWT_SECRET, {
-      expiresIn: "1h",
+    res.status(200).json({
+      message: "Login successful",
+      token,
+      username: user.username,
     });
-
-    res
-      .status(200)
-      .json({ message: "Login successful", token, username: user.username });
   } catch (error) {
-    console.error("Error during login:", error);
     res.status(500).json({ message: "Internal Server Error", error });
   }
 });
 
 app.post("/api/repos/create", authenticateToken, async (req, res) => {
   const { repoName, roomPassword } = req.body;
-  if (!repoName || !roomPassword) {
-    return res.status(400).json({
-      success: false,
-      message: "Repository name and password required",
-    });
-  }
-
+  if (!repoName || !roomPassword)
+    return res
+      .status(400)
+      .json({ success: false, message: "Repository name and password required" });
   const db = client.db("Jee");
   const reposCollection = db.collection("repos");
-
   try {
     const hashedRoomPassword = await bcrypt.hash(roomPassword, 10);
     const repoCode = Math.floor(100000 + Math.random() * 900000).toString();
-
     const newRepo = {
       repoName,
       roomPassword: hashedRoomPassword,
@@ -166,9 +108,7 @@ app.post("/api/repos/create", authenticateToken, async (req, res) => {
       createdBy: req.username,
       createdAt: new Date(),
     };
-
     await reposCollection.insertOne(newRepo);
-
     res.status(200).json({
       success: true,
       message: "Repository created successfully",
@@ -176,55 +116,35 @@ app.post("/api/repos/create", authenticateToken, async (req, res) => {
       repoCode,
     });
   } catch (error) {
-    console.error("Error creating repository:", error);
-    res.status(500).json({
-      success: false,
-      message: "Internal Server Error",
-      error,
-    });
+    res.status(500).json({ success: false, message: "Internal Server Error", error });
   }
 });
 
 app.get("/api/repos", authenticateToken, async (req, res) => {
   const db = client.db("Jee");
   const reposCollection = db.collection("repos");
-
   try {
-    const repos = await reposCollection
-      .find({ createdBy: req.username })
-      .toArray();
+    const repos = await reposCollection.find({ createdBy: req.username }).toArray();
     res.status(200).json({ success: true, repos });
   } catch (error) {
-    console.error("Error fetching repositories:", error);
-    res.status(500).json({
-      success: false,
-      message: "Internal Server Error",
-      error,
-    });
+    res.status(500).json({ success: false, message: "Internal Server Error", error });
   }
+});
+app.get("/test", (req, res) => {
+  console.log("Test route hit");
+  res.status(200).json({ message: "Server is working" });
 });
 
 app.post("/api/repos/join", authenticateToken, async (req, res) => {
   const { joinCode } = req.body;
-  if (!joinCode) {
-    return res.status(400).json({
-      success: false,
-      message: "Join code is required",
-    });
-  }
-
+  if (!joinCode)
+    return res.status(400).json({ success: false, message: "Join code is required" });
   const db = client.db("Jee");
   const reposCollection = db.collection("repos");
-
   try {
     const repo = await reposCollection.findOne({ repoCode: joinCode });
-    if (!repo) {
-      return res.status(400).json({
-        success: false,
-        message: "Repository not found",
-      });
-    }
-
+    if (!repo)
+      return res.status(400).json({ success: false, message: "Repository not found" });
     res.status(200).json({
       success: true,
       message: "Repository found",
@@ -232,14 +152,86 @@ app.post("/api/repos/join", authenticateToken, async (req, res) => {
       repoCode: repo.repoCode,
     });
   } catch (error) {
-    console.error("Error joining repository:", error);
-    res.status(500).json({
+    res.status(500).json({ success: false, message: "Internal Server Error", error });
+  }
+});
+// New route to execute code using Judge0 API
+app.post("/api/run-code", authenticateToken, async (req, res) => {
+  const { code, language, stdin } = req.body;
+
+  if (!code || !language) {
+    return res.status(400).json({
       success: false,
-      message: "Internal Server Error",
-      error,
+      message: "Code and language are required",
+    });
+  }
+
+  const languageMap = {
+    python: 71,
+    javascript: 63,
+    cpp: 54,
+    java: 62,
+  };
+
+  const languageId = languageMap[language];
+  if (!languageId) {
+    return res.status(400).json({
+      success: false,
+      message: "Unsupported language",
+    });
+  }
+
+  try {
+    // Step 1: Submit code
+    const submissionResponse = await axios.post(
+      'https://judge0-ce.p.rapidapi.com/submissions?base64_encoded=false&wait=true',
+      {
+        language_id: languageId,
+        source_code: code,
+        stdin: stdin,
+      },
+      {
+        headers: {
+          'content-type': 'application/json',
+          'x-rapidapi-host': 'judge0-ce.p.rapidapi.com',
+          'x-rapidapi-key': '2017184a89msh00d02f7b84ef328p117473jsnce88478ea638', // Replace with valid RapidAPI key
+        },
+      }
+    );
+
+    const result = submissionResponse.data;
+    console.log(result);
+    if (result.stderr) {
+      return res.status(500).json({
+        success: false,
+        message: "Runtime Error",
+        error: result.stderr,
+      });
+    }
+
+    if (result.compile_output) {
+      return res.status(500).json({
+        success: false,
+        message: "Compilation Error",
+        error: result.compile_output,
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      output: result.stdout,
+    });
+
+  } catch (error) {
+    console.error("Execution error:", error.response?.data || error.message);
+    return res.status(error.response?.status || 500).json({
+      success: false,
+      message: error.response?.data?.message || "Something went wrong",
+      error: error.message,
     });
   }
 });
+
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running at http://10.81.78.12:${PORT}`);
