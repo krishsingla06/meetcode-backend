@@ -5,6 +5,8 @@ import { MongoClient } from "mongodb";
 import cors from "cors";
 import dotenv from "dotenv";
 import axios from "axios"; // Importing axios for HTTP requests
+import { Server } from "socket.io";
+import http from "http";
 
 dotenv.config();
 
@@ -15,6 +17,10 @@ const BASE_URL = process.env.FRONTEND_URL;
 const uri = `mongodb+srv://arnavvv:C14hMPSHTpdcB5vq@arnavvv.isvph.mongodb.net/JEE`;
 const client = new MongoClient(uri);
 
+console.log("BASE_URL =", BASE_URL);
+
+const server = http.createServer(app);
+
 await client.connect();
 
 const corsOptions = {
@@ -23,6 +29,95 @@ const corsOptions = {
   credentials: true,
 };
 
+const io = new Server(server, {
+  cors: {
+    origin: BASE_URL,
+    methods: ["GET", "POST"],
+    credentials: true,
+  },
+});
+
+const usersInRoom = {};
+io.on("connection", (socket) => {
+  console.log("A user connected", socket.id);
+
+  socket.on("join-room", async (repoCode, username) => {
+    socket.join(repoCode);
+    if (!usersInRoom[repoCode]) usersInRoom[repoCode] = [];
+    usersInRoom[repoCode].push({ id: socket.id, name: username });
+  
+    // Fetch and send existing files
+    const db = client.db("Jee");
+    const filesCollection = db.collection("files");
+    const existingFiles = await filesCollection
+      .find({ repoCode })
+      .project({ _id: 0, filename: 1, content: 1 })
+      .toArray();
+    
+      socket.emit("initial-files", existingFiles.map(f => ({
+        ...f,
+        path: f.filename
+      })));
+  
+    io.to(repoCode).emit("update-users", usersInRoom[repoCode]);
+    console.log(`User ${socket.id} joined room ${repoCode}`);
+  });
+  
+
+  socket.on("code-change", async ({ repoCode, filename, code }) => {
+    const db = client.db("Jee");
+    const filesCollection = db.collection("files");
+  
+    await filesCollection.updateOne(
+      { repoCode, filename },
+      { $set: { content: code } },
+      { upsert: true }
+    );
+  
+    socket.to(repoCode).emit("code-update", { filename, code });
+  });
+  
+
+  socket.on("file-created", async ({ repoCode, file }) => {
+    const db = client.db("Jee");
+    const filesCollection = db.collection("files");
+  
+    const result = await filesCollection.updateOne(
+      { repoCode, filename: file },
+      { $setOnInsert: { content: "" } },
+      { upsert: true }
+    );
+  
+    const newFile = await filesCollection.findOne(
+      { repoCode, filename: file },
+      { projection: { _id: 0, filename: 1, content: 1 } }
+    );
+    
+    io.to(repoCode).emit("file-created", newFile);
+  });
+  
+  
+
+  socket.on("file-deleted", async ({ repoCode, filePath }) => {
+    const db = client.db("Jee");
+    const filesCollection = db.collection("files");
+  
+    await filesCollection.deleteOne({ repoCode, filename: filePath });
+  
+    socket.to(repoCode).emit("file-deleted", { filePath });
+  });
+  
+
+  socket.on("disconnect", () => {
+    for (const room in usersInRoom) {
+      usersInRoom[room] = usersInRoom[room].filter(
+        (user) => user.id !== socket.id
+      );
+      io.to(room).emit("update-users", usersInRoom[room]);
+    }
+    console.log("User disconnected", socket.id);
+  });
+});
 
 app.use(express.json());
 app.use(cors(corsOptions));
@@ -232,7 +327,27 @@ app.post("/api/run-code", authenticateToken, async (req, res) => {
   }
 });
 
+app.get("/api/repos/:repoCode/files", authenticateToken, async (req, res) => {
+  const { repoCode } = req.params;
+  const db = client.db("Jee");
+  const filesCollection = db.collection("files");
 
-app.listen(PORT, "0.0.0.0", () => {
+  try {
+    const files = await filesCollection
+      .find({ repoCode })
+      .project({ _id: 0, filename: 1, content: 1 })
+      .toArray();
+
+    res.status(200).json({ success: true, files });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch files",
+      error,
+    });
+  }
+});
+
+server.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running at http://10.81.78.12:${PORT}`);
 });
