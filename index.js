@@ -4,31 +4,66 @@ import jwt from "jsonwebtoken";
 import { MongoClient } from "mongodb";
 import cors from "cors";
 import dotenv from "dotenv";
-import axios from "axios"; // Importing axios for HTTP requests
+import axios from "axios";
 import { Server } from "socket.io";
 import http from "http";
 
 dotenv.config();
 
+// Server Configuration
 const app = express();
-const JWT_SECRET = "12345";
-const PORT = 8000;
-const BASE_URL = process.env.FRONTEND_URL;
-const uri = `mongodb+srv://arnavvv:C14hMPSHTpdcB5vq@arnavvv.isvph.mongodb.net/JEE`;
-const client = new MongoClient(uri);
+const PORT = process.env.PORT || 8000;
+const JWT_SECRET = process.env.JWT_SECRET || "12345";
+const BASE_URL = process.env.FRONTEND_URL || "http://localhost:3000";
+const MONGODB_URI = process.env.MONGODB_URI || "mongodb+srv://arnavvv:C14hMPSHTpdcB5vq@arnavvv.isvph.mongodb.net/JEE";
+const DB_NAME = "Jee";
 
-console.log("BASE_URL =", BASE_URL);
-
+// Create HTTP server
 const server = http.createServer(app);
 
-await client.connect();
+// MongoDB Setup
+const client = new MongoClient(MONGODB_URI);
+let db;
 
+// Connect to MongoDB
+async function connectToDatabase() {
+  try {
+    await client.connect();
+    db = client.db(DB_NAME);
+    console.log("Connected to MongoDB");
+  } catch (err) {
+    console.error("MongoDB connection error:", err);
+  }
+}
+
+// CORS Configuration
 const corsOptions = {
   origin: BASE_URL,
   methods: "GET, POST, PUT, DELETE",
   credentials: true,
 };
 
+app.use(cors(corsOptions));
+app.use(express.json());
+
+// Authentication middleware
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers["authorization"];
+  if (!authHeader) {
+    return res.status(401).json({ success: false, message: "Authorization header missing" });
+  }
+  
+  const token = authHeader.split(" ")[1];
+  if (!token) return res.status(401).json({ success: false, message: "Token not provided" });
+
+  jwt.verify(token, JWT_SECRET, (err, decoded) => {
+    if (err) return res.status(403).json({ success: false, message: "Invalid token", error: err });
+    req.username = decoded.username;
+    next();
+  });
+}
+
+// Socket.io setup
 const io = new Server(server, {
   cors: {
     origin: BASE_URL,
@@ -37,12 +72,63 @@ const io = new Server(server, {
   },
 });
 
+// Active users tracking
 const usersInRoom = {};
+
+// Socket.io connection handling
 io.on("connection", (socket) => {
   console.log("A user connected", socket.id);
 
+  // Handle room joining
+  socket.on("join-room", async (repoCode, username) => {
+    socket.join(repoCode);
+    
+    if (!usersInRoom[repoCode]) {
+      usersInRoom[repoCode] = [];
+    }
+    
+    usersInRoom[repoCode].push({ id: socket.id, name: username });
+
+    // Fetch and send existing files
+    try {
+      const filesCollection = db.collection("files");
+      console.log(`Fetching files for repo ${repoCode} for user ${username}`);
+      
+      const existingFiles = await filesCollection
+        .find({ repoCode })
+        .project({ _id: 0, filename: 1, content: 1 })
+        .toArray();
+      
+      console.log(`Found ${existingFiles.length} files for repo ${repoCode}`);
+      
+      socket.emit("initial-files", existingFiles.map(f => ({
+        path: f.filename,
+        content: f.content
+      })));
+      
+      // Load chat history
+      const chatCollection = db.collection("chat_messages");
+      const messages = await chatCollection
+        .find({ repoCode })
+        .sort({ timestamp: 1 })
+        .limit(50)
+        .toArray();
+      
+      socket.emit("chat-history", messages.map(msg => ({
+        username: msg.username,
+        message: msg.message,
+        timestamp: msg.timestamp
+      })));
+      
+      io.to(repoCode).emit("update-users", usersInRoom[repoCode]);
+      console.log(`User ${socket.id} (${username}) joined room ${repoCode}`);
+    } catch (error) {
+      console.error(`Error fetching data for repo ${repoCode}:`, error);
+    }
+  });
+
+  // Handle file creation
   socket.on("file-created", async ({ repoCode, file }) => {
-    const db = client.db("Jee");
     const filesCollection = db.collection("files");
     
     // Handle both string and object formats
@@ -66,20 +152,14 @@ io.on("connection", (socket) => {
       { upsert: true }
     );
   
-    const newFile = await filesCollection.findOne(
-      { repoCode, filename },
-      { projection: { _id: 0, filename: 1, content: 1 } }
-    );
-    
     io.to(repoCode).emit("file-created", {
-      path: newFile.filename,
-      content: newFile.content
+      path: filename,
+      content
     });
   });
-  
 
+  // Handle code changes
   socket.on("code-change", async ({ repoCode, filename, code }) => {
-    const db = client.db("Jee");
     const filesCollection = db.collection("files");
   
     await filesCollection.updateOne(
@@ -90,51 +170,17 @@ io.on("connection", (socket) => {
   
     socket.to(repoCode).emit("code-update", { filename, code });
   });
-  
-  // socket.on("join-room", async ({ repoCode, username }) => {
-    // In the socket.on("join-room") handler on the server
-  socket.on("join-room", async (repoCode, username) => {
-    socket.join(repoCode);
-    if (!usersInRoom[repoCode]) usersInRoom[repoCode] = [];
-    usersInRoom[repoCode].push({ id: socket.id, name: username });
 
-    // Fetch and send existing files
-    const db = client.db("Jee");
-    const filesCollection = db.collection("files");
-    console.log(`Fetching files for repo ${repoCode} for user ${username}`);
-    
-    try {
-      const existingFiles = await filesCollection
-        .find({ repoCode })
-        .project({ _id: 0, filename: 1, content: 1 })
-        .toArray();
-      
-      console.log(`Found ${existingFiles.length} files for repo ${repoCode}`);
-      
-      socket.emit("initial-files", existingFiles.map(f => ({
-        ...f,
-        path: f.filename
-      })));
-      
-      io.to(repoCode).emit("update-users", usersInRoom[repoCode]);
-      console.log(`User ${socket.id} (${username}) joined room ${repoCode}`);
-    } catch (error) {
-      console.error(`Error fetching files for repo ${repoCode}:`, error);
-    }
-  });
-
+  // Handle file deletion
   socket.on("file-deleted", async ({ repoCode, filePath }) => {
-    const db = client.db("Jee");
     const filesCollection = db.collection("files");
     
     console.log(`Deleting file ${filePath} from repo ${repoCode}`);
     
     try {
-      // Delete the file from database
       const result = await filesCollection.deleteOne({ repoCode, filename: filePath });
       
       if (result.deletedCount > 0) {
-        // Broadcast deletion to ALL clients in the room (including sender for confirmation)
         io.to(repoCode).emit("file-deleted", { filePath });
         console.log(`File ${filePath} deleted and broadcast to all users`);
       } else {
@@ -144,8 +190,44 @@ io.on("connection", (socket) => {
       console.error("Error deleting file:", error);
     }
   });
-  
 
+  // Handle chat messages
+  socket.on("send-message", async ({ repoCode, message, username }) => {
+    // If username is not provided, try to find it in the active users list
+    if (!username) {
+      const user = usersInRoom[repoCode]?.find(user => user.id === socket.id);
+      username = user?.name || "Anonymous";
+    }
+    
+    if (!repoCode || !message.trim()) return;
+    
+    try {
+      // Create chat message object
+      const chatMessage = {
+        repoCode,
+        username,
+        message: message.trim(),
+        timestamp: new Date()
+      };
+      
+      // Store in database
+      await db.collection("chat_messages").insertOne(chatMessage);
+      
+      // Broadcast to all clients in the room
+      io.to(repoCode).emit("new-message", {
+        username: chatMessage.username,
+        message: chatMessage.message,
+        timestamp: chatMessage.timestamp
+      });
+      
+      console.log(`Chat in ${repoCode} from ${username}: ${message}`);
+    } catch (err) {
+      console.error("Error saving chat message:", err);
+      socket.emit("chat-error", { error: "Failed to save message" });
+    }
+  });
+
+  // Handle disconnection
   socket.on("disconnect", () => {
     for (const room in usersInRoom) {
       usersInRoom[room] = usersInRoom[room].filter(
@@ -157,83 +239,88 @@ io.on("connection", (socket) => {
   });
 });
 
-app.use(express.json());
-app.use(cors(corsOptions));
-
-function authenticateToken(req, res, next) {
-  const authHeader = req.headers["authorization"];
-  if (!authHeader) {
-    return res.status(401).json({ message: "Authorization header missing" });
-  }
-  const token = authHeader.split(" ")[1];
-  if (!token) return res.status(401).json({ message: "Token not provided" });
-
-  jwt.verify(token, JWT_SECRET, (err, decoded) => {
-    if (err)
-      return res.status(403).json({ message: "Invalid token", error: err });
-    req.username = decoded.username;
-    next();
-  });
-}
-
+// API Routes
 app.get("/", (req, res) => {
-  console.log("path = /");
   res.status(200).send("Welcome to the root URL of Meet Code Server");
 });
 
-// Existing routes for signup, login, etc. ...
+app.get("/test", (req, res) => {
+  console.log("Test route hit");
+  res.status(200).json({ message: "Server is working" });
+});
+
+// User Authentication Routes
 app.post("/signup", async (req, res) => {
   const { username, password } = req.body;
-  const db = client.db("Jee");
-  const usersCollection = db.collection("users");
+  
+  if (!username || !password) {
+    return res.status(400).json({ success: false, message: "Username and password are required" });
+  }
+  
   try {
+    const usersCollection = db.collection("users");
     const userExists = await usersCollection.findOne({ username });
-    if (userExists)
-      return res.status(400).json({ message: "User already exists" });
+    
+    if (userExists) {
+      return res.status(400).json({ success: false, message: "User already exists" });
+    }
+    
     const hashedPassword = await bcrypt.hash(password, 10);
-    const newUser = { username, password: hashedPassword };
-    await usersCollection.insertOne(newUser);
-    res.status(200).json({ message: "User created successfully" });
+    await usersCollection.insertOne({ username, password: hashedPassword });
+    
+    res.status(200).json({ success: true, message: "User created successfully" });
   } catch (error) {
-    res.status(500).json({ message: "Internal Server Error", error });
+    res.status(500).json({ success: false, message: "Internal Server Error", error: error.message });
   }
 });
 
 app.post("/login", async (req, res) => {
   const { username, password } = req.body;
-  const db = client.db("Jee");
-  const usersCollection = db.collection("users");
+  
+  if (!username || !password) {
+    return res.status(400).json({ success: false, message: "Username and password are required" });
+  }
+  
   try {
+    const usersCollection = db.collection("users");
     const user = await usersCollection.findOne({ username });
-    if (!user)
-      return res.status(400).json({ message: "User not found" });
+    
+    if (!user) {
+      return res.status(400).json({ success: false, message: "User not found" });
+    }
+    
     const passwordMatch = await bcrypt.compare(password, user.password);
-    if (!passwordMatch)
-      return res.status(400).json({ message: "Incorrect password" });
-    const token = jwt.sign({ username: user.username }, JWT_SECRET, {
-      expiresIn: "1h",
-    });
+    
+    if (!passwordMatch) {
+      return res.status(400).json({ success: false, message: "Incorrect password" });
+    }
+    
+    const token = jwt.sign({ username: user.username }, JWT_SECRET, { expiresIn: "1h" });
+    
     res.status(200).json({
+      success: true,
       message: "Login successful",
       token,
       username: user.username,
     });
   } catch (error) {
-    res.status(500).json({ message: "Internal Server Error", error });
+    res.status(500).json({ success: false, message: "Internal Server Error", error: error.message });
   }
 });
 
+// Repository Routes
 app.post("/api/repos/create", authenticateToken, async (req, res) => {
   const { repoName, roomPassword } = req.body;
-  if (!repoName || !roomPassword)
-    return res
-      .status(400)
-      .json({ success: false, message: "Repository name and password required" });
-  const db = client.db("Jee");
-  const reposCollection = db.collection("repos");
+  
+  if (!repoName || !roomPassword) {
+    return res.status(400).json({ success: false, message: "Repository name and password required" });
+  }
+  
   try {
+    const reposCollection = db.collection("repos");
     const hashedRoomPassword = await bcrypt.hash(roomPassword, 10);
     const repoCode = Math.floor(100000 + Math.random() * 900000).toString();
+    
     const newRepo = {
       repoName,
       roomPassword: hashedRoomPassword,
@@ -241,7 +328,9 @@ app.post("/api/repos/create", authenticateToken, async (req, res) => {
       createdBy: req.username,
       createdAt: new Date(),
     };
+    
     await reposCollection.insertOne(newRepo);
+    
     res.status(200).json({
       success: true,
       message: "Repository created successfully",
@@ -249,35 +338,36 @@ app.post("/api/repos/create", authenticateToken, async (req, res) => {
       repoCode,
     });
   } catch (error) {
-    res.status(500).json({ success: false, message: "Internal Server Error", error });
+    res.status(500).json({ success: false, message: "Internal Server Error", error: error.message });
   }
 });
 
 app.get("/api/repos", authenticateToken, async (req, res) => {
-  const db = client.db("Jee");
-  const reposCollection = db.collection("repos");
   try {
+    const reposCollection = db.collection("repos");
     const repos = await reposCollection.find({ createdBy: req.username }).toArray();
+    
     res.status(200).json({ success: true, repos });
   } catch (error) {
-    res.status(500).json({ success: false, message: "Internal Server Error", error });
+    res.status(500).json({ success: false, message: "Internal Server Error", error: error.message });
   }
-});
-app.get("/test", (req, res) => {
-  console.log("Test route hit");
-  res.status(200).json({ message: "Server is working" });
 });
 
 app.post("/api/repos/join", authenticateToken, async (req, res) => {
   const { joinCode } = req.body;
-  if (!joinCode)
+  
+  if (!joinCode) {
     return res.status(400).json({ success: false, message: "Join code is required" });
-  const db = client.db("Jee");
-  const reposCollection = db.collection("repos");
+  }
+  
   try {
+    const reposCollection = db.collection("repos");
     const repo = await reposCollection.findOne({ repoCode: joinCode });
-    if (!repo)
+    
+    if (!repo) {
       return res.status(400).json({ success: false, message: "Repository not found" });
+    }
+    
     res.status(200).json({
       success: true,
       message: "Repository found",
@@ -285,10 +375,137 @@ app.post("/api/repos/join", authenticateToken, async (req, res) => {
       repoCode: repo.repoCode,
     });
   } catch (error) {
-    res.status(500).json({ success: false, message: "Internal Server Error", error });
+    res.status(500).json({ success: false, message: "Internal Server Error", error: error.message });
   }
 });
-// New route to execute code using Judge0 API
+
+// File Routes
+app.get("/api/repos/:repoCode/files", authenticateToken, async (req, res) => {
+  const { repoCode } = req.params;
+  
+  try {
+    const filesCollection = db.collection("files");
+    const files = await filesCollection
+      .find({ repoCode })
+      .project({ _id: 0, filename: 1, content: 1 })
+      .toArray();
+
+    res.status(200).json({ success: true, files });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch files",
+      error: error.message,
+    });
+  }
+});
+
+app.put("/api/files/:repoCode", authenticateToken, async (req, res) => {
+  const { repoCode } = req.params;
+  const { filename, content } = req.body;
+  
+  if (!filename) {
+    return res.status(400).json({ success: false, message: "Filename is required" });
+  }
+  
+  try {
+    const filesCollection = db.collection("files");
+    await filesCollection.updateOne(
+      { repoCode, filename },
+      { $set: { content } },
+      { upsert: true }
+    );
+    
+    res.status(200).json({ success: true, message: "File saved successfully" });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Failed to save file",
+      error: error.message,
+    });
+  }
+});
+
+app.get("/api/files/:repoCode", authenticateToken, async (req, res) => {
+  const { repoCode } = req.params;
+  
+  try {
+    const filesCollection = db.collection("files");
+    const fileDocuments = await filesCollection
+      .find({ repoCode })
+      .project({ _id: 0, filename: 1, content: 1 })
+      .toArray();
+    
+    const files = {};
+    fileDocuments.forEach(file => {
+      files[file.filename] = file.content;
+    });
+    
+    res.status(200).json({ success: true, files });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch files",
+      error: error.message,
+    });
+  }
+});
+
+app.delete("/api/files/:repoCode", authenticateToken, async (req, res) => {
+  const { repoCode } = req.params;
+  const { filename } = req.body;
+  
+  if (!filename) {
+    return res.status(400).json({ success: false, message: "Filename is required" });
+  }
+  
+  console.log(`API request to delete file ${filename} from repo ${repoCode}`);
+  
+  try {
+    const filesCollection = db.collection("files");
+    const result = await filesCollection.deleteOne({ repoCode, filename });
+    
+    if (result.deletedCount > 0) {
+      console.log(`File ${filename} deleted via API`);
+      
+      // Also notify all users about the deletion via socket
+      io.to(repoCode).emit("file-deleted", { filePath: filename });
+      
+      res.status(200).json({ success: true, message: "File deleted successfully" });
+    } else {
+      console.log(`File ${filename} not found when trying to delete via API`);
+      res.status(404).json({ success: false, message: "File not found" });
+    }
+  } catch (error) {
+    console.error("Error deleting file via API:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to delete file",
+      error: error.message,
+    });
+  }
+});
+
+// Chat Routes
+app.get("/api/chat/:repoCode", authenticateToken, async (req, res) => {
+  try {
+    const { repoCode } = req.params;
+    
+    const chatCollection = db.collection("chat_messages");
+    const messages = await chatCollection
+      .find({ repoCode })
+      .sort({ timestamp: -1 })
+      .limit(50)
+      .toArray();
+    
+    res.json({ success: true, messages: messages.reverse() });
+  } catch (err) {
+    console.error("Error fetching chat history:", err);
+    res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// Code Execution Route
 app.post("/api/run-code", authenticateToken, async (req, res) => {
   const { code, language, stdin } = req.body;
 
@@ -315,27 +532,27 @@ app.post("/api/run-code", authenticateToken, async (req, res) => {
   }
 
   try {
-    // Step 1: Submit code
+    // Submit code to Judge0 API
     const submissionResponse = await axios.post(
       'https://judge0-ce.p.rapidapi.com/submissions?base64_encoded=false&wait=true',
       {
         language_id: languageId,
         source_code: code,
-        stdin: stdin,
+        stdin: stdin || "",
       },
       {
         headers: {
           'content-type': 'application/json',
           'x-rapidapi-host': 'judge0-ce.p.rapidapi.com',
-          'x-rapidapi-key': '2017184a89msh00d02f7b84ef328p117473jsnce88478ea638', // Replace with valid RapidAPI key
+          'x-rapidapi-key': process.env.RAPIDAPI_KEY || '2017184a89msh00d02f7b84ef328p117473jsnce88478ea638',
         },
       }
     );
 
     const result = submissionResponse.data;
-    console.log(result);
+    
     if (result.stderr) {
-      return res.status(500).json({
+      return res.status(400).json({
         success: false,
         message: "Runtime Error",
         error: result.stderr,
@@ -343,7 +560,7 @@ app.post("/api/run-code", authenticateToken, async (req, res) => {
     }
 
     if (result.compile_output) {
-      return res.status(500).json({
+      return res.status(400).json({
         success: false,
         message: "Compilation Error",
         error: result.compile_output,
@@ -365,121 +582,12 @@ app.post("/api/run-code", authenticateToken, async (req, res) => {
   }
 });
 
-app.get("/api/repos/:repoCode/files", authenticateToken, async (req, res) => {
-  const { repoCode } = req.params;
-  const db = client.db("Jee");
-  const filesCollection = db.collection("files");
+// Start the server
+async function startServer() {
+  await connectToDatabase();
+  server.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running at http://0.0.0.0:${PORT}`);
+  });
+}
 
-  try {
-    const files = await filesCollection
-      .find({ repoCode })
-      .project({ _id: 0, filename: 1, content: 1 })
-      .toArray();
-
-    res.status(200).json({ success: true, files });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "Failed to fetch files",
-      error,
-    });
-  }
-});
-
-// Create or update a file
-app.put("/api/files/:repoCode", authenticateToken, async (req, res) => {
-  const { repoCode } = req.params;
-  const { filename, content } = req.body;
-  
-  if (!filename) {
-    return res.status(400).json({ success: false, message: "Filename is required" });
-  }
-  
-  const db = client.db("Jee");
-  const filesCollection = db.collection("files");
-  
-  try {
-    await filesCollection.updateOne(
-      { repoCode, filename },
-      { $set: { content } },
-      { upsert: true }
-    );
-    
-    res.status(200).json({ success: true, message: "File saved successfully" });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "Failed to save file",
-      error,
-    });
-  }
-});
-
-// Get all files for a repo
-app.get("/api/files/:repoCode", authenticateToken, async (req, res) => {
-  const { repoCode } = req.params;
-  const db = client.db("Jee");
-  const filesCollection = db.collection("files");
-  
-  try {
-    const fileDocuments = await filesCollection
-      .find({ repoCode })
-      .project({ _id: 0, filename: 1, content: 1 })
-      .toArray();
-    
-    const files = {};
-    fileDocuments.forEach(file => {
-      files[file.filename] = file.content;
-    });
-    
-    res.status(200).json({ success: true, files });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "Failed to fetch files",
-      error,
-    });
-  }
-});
-
-// Delete a file
-app.delete("/api/files/:repoCode", authenticateToken, async (req, res) => {
-  const { repoCode } = req.params;
-  const { filename } = req.body;
-  
-  if (!filename) {
-    return res.status(400).json({ success: false, message: "Filename is required" });
-  }
-  
-  console.log(`API request to delete file ${filename} from repo ${repoCode}`);
-  
-  const db = client.db("Jee");
-  const filesCollection = db.collection("files");
-  
-  try {
-    const result = await filesCollection.deleteOne({ repoCode, filename });
-    
-    if (result.deletedCount > 0) {
-      console.log(`File ${filename} deleted via API`);
-      
-      // Also notify all users about the deletion via socket
-      io.to(repoCode).emit("file-deleted", { filePath: filename });
-      
-      res.status(200).json({ success: true, message: "File deleted successfully" });
-    } else {
-      console.log(`File ${filename} not found when trying to delete via API`);
-      res.status(404).json({ success: false, message: "File not found" });
-    }
-  } catch (error) {
-    console.error("Error deleting file via API:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to delete file",
-      error: error.message,
-    });
-  }
-});
-
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`Server running at http://10.81.78.12:${PORT}`);
-});
+startServer();
