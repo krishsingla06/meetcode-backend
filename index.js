@@ -41,26 +41,40 @@ const usersInRoom = {};
 io.on("connection", (socket) => {
   console.log("A user connected", socket.id);
 
-  socket.on("join-room", async (repoCode, username) => {
-    socket.join(repoCode);
-    if (!usersInRoom[repoCode]) usersInRoom[repoCode] = [];
-    usersInRoom[repoCode].push({ id: socket.id, name: username });
-  
-    // Fetch and send existing files
+  socket.on("file-created", async ({ repoCode, file }) => {
     const db = client.db("Jee");
     const filesCollection = db.collection("files");
-    const existingFiles = await filesCollection
-      .find({ repoCode })
-      .project({ _id: 0, filename: 1, content: 1 })
-      .toArray();
     
-      socket.emit("initial-files", existingFiles.map(f => ({
-        ...f,
-        path: f.filename
-      })));
+    // Handle both string and object formats
+    let filename, content;
+    if (typeof file === 'string') {
+      filename = file;
+      content = "";
+    } else if (typeof file === 'object') {
+      filename = file.path || file.name;
+      content = file.content || "";
+    }
+    
+    if (!filename) {
+      console.error("Invalid file format received:", file);
+      return;
+    }
   
-    io.to(repoCode).emit("update-users", usersInRoom[repoCode]);
-    console.log(`User ${socket.id} joined room ${repoCode}`);
+    await filesCollection.updateOne(
+      { repoCode, filename },
+      { $set: { content } },
+      { upsert: true }
+    );
+  
+    const newFile = await filesCollection.findOne(
+      { repoCode, filename },
+      { projection: { _id: 0, filename: 1, content: 1 } }
+    );
+    
+    io.to(repoCode).emit("file-created", {
+      path: newFile.filename,
+      content: newFile.content
+    });
   });
   
 
@@ -77,34 +91,58 @@ io.on("connection", (socket) => {
     socket.to(repoCode).emit("code-update", { filename, code });
   });
   
+  // socket.on("join-room", async ({ repoCode, username }) => {
+    // In the socket.on("join-room") handler on the server
+  socket.on("join-room", async (repoCode, username) => {
+    socket.join(repoCode);
+    if (!usersInRoom[repoCode]) usersInRoom[repoCode] = [];
+    usersInRoom[repoCode].push({ id: socket.id, name: username });
 
-  socket.on("file-created", async ({ repoCode, file }) => {
+    // Fetch and send existing files
     const db = client.db("Jee");
     const filesCollection = db.collection("files");
-  
-    const result = await filesCollection.updateOne(
-      { repoCode, filename: file },
-      { $setOnInsert: { content: "" } },
-      { upsert: true }
-    );
-  
-    const newFile = await filesCollection.findOne(
-      { repoCode, filename: file },
-      { projection: { _id: 0, filename: 1, content: 1 } }
-    );
+    console.log(`Fetching files for repo ${repoCode} for user ${username}`);
     
-    io.to(repoCode).emit("file-created", newFile);
+    try {
+      const existingFiles = await filesCollection
+        .find({ repoCode })
+        .project({ _id: 0, filename: 1, content: 1 })
+        .toArray();
+      
+      console.log(`Found ${existingFiles.length} files for repo ${repoCode}`);
+      
+      socket.emit("initial-files", existingFiles.map(f => ({
+        ...f,
+        path: f.filename
+      })));
+      
+      io.to(repoCode).emit("update-users", usersInRoom[repoCode]);
+      console.log(`User ${socket.id} (${username}) joined room ${repoCode}`);
+    } catch (error) {
+      console.error(`Error fetching files for repo ${repoCode}:`, error);
+    }
   });
-  
-  
 
   socket.on("file-deleted", async ({ repoCode, filePath }) => {
     const db = client.db("Jee");
     const filesCollection = db.collection("files");
-  
-    await filesCollection.deleteOne({ repoCode, filename: filePath });
-  
-    socket.to(repoCode).emit("file-deleted", { filePath });
+    
+    console.log(`Deleting file ${filePath} from repo ${repoCode}`);
+    
+    try {
+      // Delete the file from database
+      const result = await filesCollection.deleteOne({ repoCode, filename: filePath });
+      
+      if (result.deletedCount > 0) {
+        // Broadcast deletion to ALL clients in the room (including sender for confirmation)
+        io.to(repoCode).emit("file-deleted", { filePath });
+        console.log(`File ${filePath} deleted and broadcast to all users`);
+      } else {
+        console.log(`File ${filePath} not found in database`);
+      }
+    } catch (error) {
+      console.error("Error deleting file:", error);
+    }
   });
   
 
@@ -344,6 +382,100 @@ app.get("/api/repos/:repoCode/files", authenticateToken, async (req, res) => {
       success: false,
       message: "Failed to fetch files",
       error,
+    });
+  }
+});
+
+// Create or update a file
+app.put("/api/files/:repoCode", authenticateToken, async (req, res) => {
+  const { repoCode } = req.params;
+  const { filename, content } = req.body;
+  
+  if (!filename) {
+    return res.status(400).json({ success: false, message: "Filename is required" });
+  }
+  
+  const db = client.db("Jee");
+  const filesCollection = db.collection("files");
+  
+  try {
+    await filesCollection.updateOne(
+      { repoCode, filename },
+      { $set: { content } },
+      { upsert: true }
+    );
+    
+    res.status(200).json({ success: true, message: "File saved successfully" });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Failed to save file",
+      error,
+    });
+  }
+});
+
+// Get all files for a repo
+app.get("/api/files/:repoCode", authenticateToken, async (req, res) => {
+  const { repoCode } = req.params;
+  const db = client.db("Jee");
+  const filesCollection = db.collection("files");
+  
+  try {
+    const fileDocuments = await filesCollection
+      .find({ repoCode })
+      .project({ _id: 0, filename: 1, content: 1 })
+      .toArray();
+    
+    const files = {};
+    fileDocuments.forEach(file => {
+      files[file.filename] = file.content;
+    });
+    
+    res.status(200).json({ success: true, files });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch files",
+      error,
+    });
+  }
+});
+
+// Delete a file
+app.delete("/api/files/:repoCode", authenticateToken, async (req, res) => {
+  const { repoCode } = req.params;
+  const { filename } = req.body;
+  
+  if (!filename) {
+    return res.status(400).json({ success: false, message: "Filename is required" });
+  }
+  
+  console.log(`API request to delete file ${filename} from repo ${repoCode}`);
+  
+  const db = client.db("Jee");
+  const filesCollection = db.collection("files");
+  
+  try {
+    const result = await filesCollection.deleteOne({ repoCode, filename });
+    
+    if (result.deletedCount > 0) {
+      console.log(`File ${filename} deleted via API`);
+      
+      // Also notify all users about the deletion via socket
+      io.to(repoCode).emit("file-deleted", { filePath: filename });
+      
+      res.status(200).json({ success: true, message: "File deleted successfully" });
+    } else {
+      console.log(`File ${filename} not found when trying to delete via API`);
+      res.status(404).json({ success: false, message: "File not found" });
+    }
+  } catch (error) {
+    console.error("Error deleting file via API:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to delete file",
+      error: error.message,
     });
   }
 });
