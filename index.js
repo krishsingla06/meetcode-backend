@@ -79,6 +79,23 @@ const usersInRoom = {};
 io.on("connection", (socket) => {
   console.log("A user connected", socket.id);
 
+  socket.on("leave-room", (repoCode) => {
+    if (usersInRoom[repoCode]) {
+      usersInRoom[repoCode] = usersInRoom[repoCode].filter(user => user.id !== socket.id);
+      io.to(repoCode).emit("update-users", usersInRoom[repoCode]);
+      socket.leave(repoCode);
+      console.log(`User ${socket.id} left room ${repoCode}`);
+    }
+  });
+
+  socket.on("disconnect", () => {
+    for (const room in usersInRoom) {
+      usersInRoom[room] = usersInRoom[room].filter(user => user.id !== socket.id);
+      io.to(room).emit("update-users", usersInRoom[room]);
+    }
+    console.log("User disconnected", socket.id);
+  });
+
   // Handle room joining
   socket.on("join-room", async (repoCode, username) => {
     socket.join(repoCode);
@@ -87,7 +104,13 @@ io.on("connection", (socket) => {
       usersInRoom[repoCode] = [];
     }
     
+    // Remove any entry with the same username first
+   usersInRoom[repoCode] = usersInRoom[repoCode].filter(user => user.name !== username);
+
+    // Then add the new one
     usersInRoom[repoCode].push({ id: socket.id, name: username });
+
+
 
     // Fetch and send existing files
     try {
@@ -239,6 +262,8 @@ io.on("connection", (socket) => {
   });
 });
 
+
+
 // API Routes
 app.get("/", (req, res) => {
   res.status(200).send("Welcome to the root URL of Meet Code Server");
@@ -354,30 +379,45 @@ app.get("/api/repos", authenticateToken, async (req, res) => {
 });
 
 app.post("/api/repos/join", authenticateToken, async (req, res) => {
-  const { joinCode } = req.body;
-  
-  if (!joinCode) {
-    return res.status(400).json({ success: false, message: "Join code is required" });
-  }
-  
-  try {
-    const reposCollection = db.collection("repos");
-    const repo = await reposCollection.findOne({ repoCode: joinCode });
-    
-    if (!repo) {
-      return res.status(400).json({ success: false, message: "Repository not found" });
-    }
-    
-    res.status(200).json({
-      success: true,
-      message: "Repository found",
-      repoName: repo.repoName,
-      repoCode: repo.repoCode,
+  let { joinCode, joinPassword } = req.body;
+  console.log("🕵️ join attempt:", `"${joinCode}"`, `"${joinPassword}"`);
+  // trim out any accidental spaces
+  joinCode = joinCode.trim();
+  joinPassword = joinPassword.trim();
+
+  if (!joinCode || !joinPassword) {
+    return res.status(400).json({
+      success: false,
+      message: "Join code and password are required",
     });
-  } catch (error) {
-    res.status(500).json({ success: false, message: "Internal Server Error", error: error.message });
   }
+
+  const reposCollection = db.collection("repos");
+  const repo = await reposCollection.findOne({ repoCode: joinCode });
+  console.log("🕵️ db lookup result:", repo);
+
+  if (!repo) {
+    return res
+      .status(400)
+      .json({ success: false, message: "Repository not found" });
+  }
+
+  const match = await bcrypt.compare(joinPassword, repo.roomPassword);
+  if (!match) {
+    return res
+      .status(401)
+      .json({ success: false, message: "Incorrect room password" });
+  }
+
+  return res.status(200).json({
+    success: true,
+    repoName: repo.repoName,
+    repoCode: repo.repoCode,
+  });
 });
+
+
+
 
 // File Routes
 app.get("/api/repos/:repoCode/files", authenticateToken, async (req, res) => {
@@ -485,6 +525,94 @@ app.delete("/api/files/:repoCode", authenticateToken, async (req, res) => {
     });
   }
 });
+
+// Change repository password
+app.put(
+  "/api/repos/:repoCode/password",
+  authenticateToken,
+  async (req, res) => {
+    const { repoCode } = req.params;
+    const { currentPassword, newPassword } = req.body;
+    if (!currentPassword || !newPassword) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Both current and new password are required" });
+    }
+
+    try {
+      const repos = db.collection("repos");
+      const repo = await repos.findOne({ repoCode });
+      if (!repo) {
+        return res
+          .status(404)
+          .json({ success: false, message: "Repository not found" });
+      }
+      // only creator can change it
+      if (repo.createdBy !== req.username) {
+        return res
+          .status(403)
+          .json({ success: false, message: "Not authorized" });
+      }
+
+      // verify current password
+      const match = await bcrypt.compare(currentPassword, repo.roomPassword);
+      if (!match) {
+        return res
+          .status(400)
+          .json({ success: false, message: "Current password is incorrect" });
+      }
+
+      // hash & update
+      const hashed = await bcrypt.hash(newPassword, 10);
+      await repos.updateOne(
+        { repoCode },
+        { $set: { roomPassword: hashed } }
+      );
+
+      return res.json({
+        success: true,
+        message: "Password updated successfully"
+      });
+    } catch (err) {
+      console.error("Error changing repo password:", err);
+      return res
+        .status(500)
+        .json({ success: false, message: "Server error" });
+    }
+  }
+);
+
+// GET a single repository by code
+app.get(
+  "/api/repos/:repoCode",
+  authenticateToken,
+  async (req, res) => {
+    const { repoCode } = req.params;
+    try {
+      const reposCollection = db.collection("repos");
+      const repo = await reposCollection.findOne({ repoCode });
+      if (!repo) {
+        return res
+          .status(404)
+          .json({ success: false, message: "Repository not found" });
+      }
+      // Return only the fields the client needs
+      return res.json({
+        success: true,
+        repository: {
+          name: repo.repoName,
+          repoCode: repo.repoCode,
+        },
+      });
+    } catch (err) {
+      console.error("Error fetching repo:", err);
+      return res
+        .status(500)
+        .json({ success: false, message: err.message });
+    }
+  }
+);
+
 
 // Chat Routes
 app.get("/api/chat/:repoCode", authenticateToken, async (req, res) => {
