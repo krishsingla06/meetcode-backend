@@ -4,9 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "nodemon index.js"
+    "start": "nodemon index.js",
+    "yjsserver": "npx y-websocket-server --port 1234 --host 0.0.0.0 --cors '*'"
   },
   "dependencies": {
+    "@y/websocket-server": "^0.1.1",
     "axios": "^1.8.4",
     "bcryptjs": "^2.4.3",
     "cookie-parser": "~1.4.4",
@@ -23,6 +25,9 @@
     "morgan": "~1.9.1",
     "nodemon": "^3.1.9",
     "socket.io": "^4.8.1",
-    "ws": "^8.18.1"
+    "ws": "^8.18.1",
+    "y-monaco": "^0.1.6",
+    "y-websocket": "^3.0.0",
+    "yjs": "^13.6.26"
   }
 }
