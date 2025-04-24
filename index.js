@@ -27,10 +27,6 @@ const server = http.createServer(app);
 
 // --- attach Yjs WS handler to your existing HTTP server ---
 const wss = new WebSocketServer({ server /* binds to 0.0.0.0 by default */ });
-// const wss = new WebSocketServer({
-//   server,
-//   path: "/yjs",
-// });
 wss.on("connection", (conn, req) => {
   // the 3rd arg is optional; defaults to using req.url.slice(1) as room name
   setupWSConnection(conn, req /*, { gc: true } */);
@@ -182,60 +178,6 @@ io.on("connection", (socket) => {
       console.error(`Error fetching data for repo ${repoCode}:`, error);
     }
   });
-
-  // Handle file creation
-  // socket.on("file-created", async ({ repoCode, file }) => {
-  //   const filesCollection = db.collection("files");
-
-  //   // Handle both string and object formats
-  //   let filename, content;
-  //   if (typeof file === "string") {
-  //     filename = file;
-  //     content = "";
-  //   } else if (typeof file === "object") {
-  //     filename = file.path || file.name;
-  //     content = file.content || "";
-  //   }
-
-  //   if (!filename) {
-  //     console.error("Invalid file format received:", file);
-  //     return;
-  //   }
-
-  //   await filesCollection.updateOne(
-  //     { repoCode, filename },
-  //     { $set: { content } },
-  //     { upsert: true }
-  //   );
-
-  //   io.to(repoCode).emit("file-created", {
-  //     path: filename,
-  //     content,
-  //   });
-  // });
-
-  // socket.on("file-created", async ({ repoCode, file, content }) => {
-  //   const filesCollection = db.collection("files");
-
-  //   // Determine filename
-  //   const filename = typeof file === "string" ? file : file.path || file.name;
-
-  //   // Respect the passed-in template, defaulting to empty string
-  //   const fileContent = content ?? "";
-
-  //   // Upsert with the correct content
-  //   await filesCollection.updateOne(
-  //     { repoCode, filename },
-  //     { $set: { content: fileContent } },
-  //     { upsert: true }
-  //   );
-
-  //   // Broadcast out the filename + real content
-  //   io.to(repoCode).emit("file-created", {
-  //     path: filename,
-  //     content: fileContent,
-  //   });
-  // });
 
   // AFTER
   socket.on(
