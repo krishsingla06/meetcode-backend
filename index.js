@@ -27,6 +27,10 @@ const server = http.createServer(app);
 
 // --- attach Yjs WS handler to your existing HTTP server ---
 const wss = new WebSocketServer({ server /* binds to 0.0.0.0 by default */ });
+// const wss = new WebSocketServer({
+//   server,
+//   path: "/yjs",
+// });
 wss.on("connection", (conn, req) => {
   // the 3rd arg is optional; defaults to using req.url.slice(1) as room name
   setupWSConnection(conn, req /*, { gc: true } */);
@@ -180,35 +184,92 @@ io.on("connection", (socket) => {
   });
 
   // Handle file creation
-  socket.on("file-created", async ({ repoCode, file }) => {
-    const filesCollection = db.collection("files");
+  // socket.on("file-created", async ({ repoCode, file }) => {
+  //   const filesCollection = db.collection("files");
 
-    // Handle both string and object formats
-    let filename, content;
-    if (typeof file === "string") {
-      filename = file;
-      content = "";
-    } else if (typeof file === "object") {
-      filename = file.path || file.name;
-      content = file.content || "";
+  //   // Handle both string and object formats
+  //   let filename, content;
+  //   if (typeof file === "string") {
+  //     filename = file;
+  //     content = "";
+  //   } else if (typeof file === "object") {
+  //     filename = file.path || file.name;
+  //     content = file.content || "";
+  //   }
+
+  //   if (!filename) {
+  //     console.error("Invalid file format received:", file);
+  //     return;
+  //   }
+
+  //   await filesCollection.updateOne(
+  //     { repoCode, filename },
+  //     { $set: { content } },
+  //     { upsert: true }
+  //   );
+
+  //   io.to(repoCode).emit("file-created", {
+  //     path: filename,
+  //     content,
+  //   });
+  // });
+
+  // socket.on("file-created", async ({ repoCode, file, content }) => {
+  //   const filesCollection = db.collection("files");
+
+  //   // Determine filename
+  //   const filename = typeof file === "string" ? file : file.path || file.name;
+
+  //   // Respect the passed-in template, defaulting to empty string
+  //   const fileContent = content ?? "";
+
+  //   // Upsert with the correct content
+  //   await filesCollection.updateOne(
+  //     { repoCode, filename },
+  //     { $set: { content: fileContent } },
+  //     { upsert: true }
+  //   );
+
+  //   // Broadcast out the filename + real content
+  //   io.to(repoCode).emit("file-created", {
+  //     path: filename,
+  //     content: fileContent,
+  //   });
+  // });
+
+  // AFTER
+  socket.on(
+    "file-created",
+    async ({ repoCode, file, content: initialContent }) => {
+      const filesCollection = db.collection("files");
+
+      // Figure out the filename…
+      const filename =
+        typeof file === "string" ? file : file.path || file.name || "";
+
+      // And take the content you actually passed in
+      const content =
+        typeof file === "object" && file.content != null
+          ? file.content
+          : initialContent;
+
+      if (!filename) {
+        console.error("Invalid file format:", file);
+        return;
+      }
+
+      await filesCollection.updateOne(
+        { repoCode, filename },
+        { $set: { content } },
+        { upsert: true }
+      );
+
+      io.to(repoCode).emit("file-created", {
+        path: filename,
+        content,
+      });
     }
-
-    if (!filename) {
-      console.error("Invalid file format received:", file);
-      return;
-    }
-
-    await filesCollection.updateOne(
-      { repoCode, filename },
-      { $set: { content } },
-      { upsert: true }
-    );
-
-    io.to(repoCode).emit("file-created", {
-      path: filename,
-      content,
-    });
-  });
+  );
 
   // Handle code changes
   socket.on("code-change", async ({ repoCode, filename, code }) => {
@@ -302,7 +363,6 @@ io.on("connection", (socket) => {
     }
   });
 
-
   // Handle disconnection
   socket.on("disconnect", () => {
     for (const room in usersInRoom) {
@@ -352,13 +412,11 @@ app.post("/signup", async (req, res) => {
       .status(200)
       .json({ success: true, message: "User created successfully" });
   } catch (error) {
-    res
-      .status(500)
-      .json({
-        success: false,
-        message: "Internal Server Error",
-        error: error.message,
-      });
+    res.status(500).json({
+      success: false,
+      message: "Internal Server Error",
+      error: error.message,
+    });
   }
 });
 
@@ -400,13 +458,11 @@ app.post("/login", async (req, res) => {
       username: user.username,
     });
   } catch (error) {
-    res
-      .status(500)
-      .json({
-        success: false,
-        message: "Internal Server Error",
-        error: error.message,
-      });
+    res.status(500).json({
+      success: false,
+      message: "Internal Server Error",
+      error: error.message,
+    });
   }
 });
 
@@ -415,12 +471,10 @@ app.post("/api/repos/create", authenticateToken, async (req, res) => {
   const { repoName, roomPassword } = req.body;
 
   if (!repoName || !roomPassword) {
-    return res
-      .status(400)
-      .json({
-        success: false,
-        message: "Repository name and password required",
-      });
+    return res.status(400).json({
+      success: false,
+      message: "Repository name and password required",
+    });
   }
 
   try {
@@ -445,13 +499,11 @@ app.post("/api/repos/create", authenticateToken, async (req, res) => {
       repoCode,
     });
   } catch (error) {
-    res
-      .status(500)
-      .json({
-        success: false,
-        message: "Internal Server Error",
-        error: error.message,
-      });
+    res.status(500).json({
+      success: false,
+      message: "Internal Server Error",
+      error: error.message,
+    });
   }
 });
 
@@ -464,13 +516,11 @@ app.get("/api/repos", authenticateToken, async (req, res) => {
 
     res.status(200).json({ success: true, repos });
   } catch (error) {
-    res
-      .status(500)
-      .json({
-        success: false,
-        message: "Internal Server Error",
-        error: error.message,
-      });
+    res.status(500).json({
+      success: false,
+      message: "Internal Server Error",
+      error: error.message,
+    });
   }
 });
 
@@ -633,12 +683,10 @@ app.put(
     const { repoCode } = req.params;
     const { currentPassword, newPassword } = req.body;
     if (!currentPassword || !newPassword) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "Both current and new password are required",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "Both current and new password are required",
+      });
     }
 
     try {
