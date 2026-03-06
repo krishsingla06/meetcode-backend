@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "nodemon index.js",
+    "start": "node index.js",
     "yjsserver": "npx y-websocket-server --port 1234 --host 0.0.0.0 --cors '*'"
   },
   "dependencies": {
